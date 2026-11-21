@@ -55,6 +55,7 @@ struct RuntimeUserConfig {
     std::optional<bool> spinningCoins;  // NSMBW: [video] spinning_coins, animated tiles
     std::optional<bool> frameGraph;     // NSMBW: [video] frame_graph, frame times under the FPS counter
     std::optional<bool> vsync;          // NSMBW: [video] vsync, presents wait for the display (Windows)
+    std::optional<bool> migrateStalePipelines;  // [video] migrate_stale_pipelines, see AuroraConfig
     std::optional<uint32_t> disabledPostProcessingPaths;
     std::optional<float> audioVolume;
     std::optional<float> audioMusicVolume;
@@ -612,6 +613,7 @@ inline RuntimeUserConfig ParseConfigDocument(const toml::value& document) {
     config.spinningCoins = FindConfigValue<bool>(document, "video", "spinning_coins");
     config.frameGraph = FindConfigValue<bool>(document, "video", "frame_graph");
     config.vsync = FindConfigValue<bool>(document, "video", "vsync");
+    config.migrateStalePipelines = FindConfigValue<bool>(document, "video", "migrate_stale_pipelines");
     config.textureReplacements = FindConfigValue<bool>(document, "video", "texture_replacements");
     config.textureDumps = FindConfigValue<bool>(document, "video", "texture_dumps");
     if (auto value = FindConfigUint(document, "video", "disabled_post_processing_paths");
@@ -887,6 +889,15 @@ inline bool VSync(bool fallback = false) {
 inline bool SetVSync(bool value) {
     Mutable().vsync = value;
     return WriteSetting("video", "vsync", value ? "true" : "false");
+}
+
+// Rewrites the bundled seed's stale GX pipelines (see AuroraConfig::migrateStaleSeedPipelines). On by default on
+// Android, where a stale seed means every new effect compiles on the phone's game thread the first time it appears.
+inline bool MigrateStalePipelines(bool fallback) {
+#if defined(__ANDROID__)
+    fallback = true;
+#endif
+    return Get().migrateStalePipelines.value_or(fallback);
 }
 
 inline bool SetShowFps(bool value) {

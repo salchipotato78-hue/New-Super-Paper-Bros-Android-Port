@@ -15,6 +15,7 @@
 #include "fiber_manager.h"
 #include "platform/host_platform.h"
 #include "runtime_log.h"
+#include "dynamic_resolution.h"
 #include "guest_profiler.h"
 #include "spm_map_sweep.h"
 #include "save_state.h"
@@ -1166,6 +1167,25 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
             }
         }
         s_lastEnd = now;
+    }
+    // Dynamic resolution: the same timings as the FPS line, on every frame of the paced path. It needs the late frames
+    // (paceThisFrame is false for those, so it must not be the condition) as much as the on-time ones, since the late
+    // frames are what says the resolution has to come down. Boot and black VI frames present unpaced and would read as
+    // free headroom, so they are left out.
+    if (presentedXfb && paceToRetrace) {
+        static Clock::time_point s_dynLast{};
+        const Clock::time_point now = Clock::now();
+        if (s_dynLast != Clock::time_point{}) {
+            double budgetMs = 0.0;
+            {
+                std::lock_guard<std::mutex> lock(g_viMutex);
+                EnsureInitializedLocked();
+                budgetMs = std::chrono::duration<double, std::milli>(ActiveIntervalLocked()).count();
+            }
+            DynamicResolution::OnFramePresented(ms(now - s_dynLast), ms(paceStart - endFrameStart), ms(now - paceStart),
+                                                budgetMs);
+        }
+        s_dynLast = now;
     }
     if (LogFpsEnabled() && presentedXfb) {
         const Clock::time_point now = Clock::now();

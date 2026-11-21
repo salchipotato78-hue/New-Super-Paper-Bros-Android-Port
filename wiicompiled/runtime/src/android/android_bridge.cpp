@@ -14,6 +14,7 @@
 #include "graphics_info.h"
 #include "runtime_config.h"
 #include "settings_overlay.h"
+#include "thermal_quality.h"
 #include "virtual_remote.h"
 
 #include "netplay/net_socket.h"
@@ -55,6 +56,13 @@ bool RestartGame() {
 } // namespace AndroidBridge
 
 extern "C" {
+
+// GameActivity.nativeReportThermalHeadroom: PowerManager.getThermalHeadroom, about once a second. Around 1.0 means
+// throttling is imminent; NaN means the device cannot tell (ignored by the runtime).
+JNIEXPORT void JNICALL MKW_JNI(nativeReportThermalHeadroom)(JNIEnv*, jclass, jfloat headroom)
+{
+    ThermalQuality::ReportHeadroom(static_cast<float>(headroom));
+}
 
 // GameActivity.nativeSetTouchState: the on-screen remote (VirtualRemote::TouchButton bits) and the
 // phone's motion (shake, tilt -1..1) for player 1. Called from the UI thread on every change.

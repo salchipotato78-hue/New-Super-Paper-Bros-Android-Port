@@ -24,6 +24,14 @@ on:
           - usa
           - europa
         default: usa
+      pgo:
+        description: "PGO: none (normal), generate (APK instrumentado y depurable para grabar el perfil), use (optimizar con el perfil del secreto SPM_PGO_PROFILE_URL)"
+        type: choice
+        options:
+          - none
+          - generate
+          - use
+        default: none
 
 jobs:
   build-apk:
@@ -37,6 +45,7 @@ jobs:
       NDK_VERSION: "29.0.14206865"           # el NDK con el que se probó el runtime (tools/android/README)
       SPM_CCACHE: "1"
       SPM_REGION: ${{ inputs.region }}
+      SPM_PGO: ${{ inputs.pgo }}
       CCACHE_DIR: /home/runner/.cache/ccache-spm
       CCACHE_MAXSIZE: "3G"
       CCACHE_BASEDIR: ${{ github.workspace }}
@@ -47,6 +56,13 @@ jobs:
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - uses: actions/checkout@v4
+
+      # Comprueba que la semilla de shaders sirve para esta build. Si no, cada shader nuevo se compila en el teléfono
+      # la primera vez que aparece (tirones). Solo avisa: la migración en el teléfono (migrate_stale_pipelines) puede
+      # salvar las filas v19 en el arranque.
+      - name: Comprobar la semilla de shaders
+        run: |
+          python3 tools/android/check-pipeline-seed.py || echo "::warning::La semilla de shaders está obsoleta (ver android/README.md, sección de semilla)."
 
       - name: Liberar espacio en el runner
         run: |
@@ -74,6 +90,24 @@ jobs:
         with:
           path: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
           key: android-ndk-${{ env.NDK_VERSION }}
+
+      # Perfil PGO (solo con pgo=use): un .profdata ya fusionado con llvm-profdata, desde el secreto SPM_PGO_PROFILE_URL.
+      - name: Descargar el perfil PGO (solo pgo=use)
+        if: inputs.pgo == 'use'
+        env:
+          SPM_PGO_PROFILE_URL: ${{ secrets.SPM_PGO_PROFILE_URL }}
+        run: |
+          set -e
+          if [ -z "$SPM_PGO_PROFILE_URL" ]; then
+            echo "::error::pgo=use necesita el secreto SPM_PGO_PROFILE_URL (un enlace de descarga directa al .profdata fusionado)."
+            exit 1
+          fi
+          URL="${SPM_PGO_PROFILE_URL/dl=0/dl=1}"
+          curl -fL --retry 3 -o /tmp/spm.profdata "$URL" \
+            || { echo "::error::No pude descargar SPM_PGO_PROFILE_URL."; exit 1; }
+          test -s /tmp/spm.profdata || { echo "::error::El perfil PGO está vacío."; exit 1; }
+          echo "SPM_PGO_PROFILE=/tmp/spm.profdata" >> "$GITHUB_ENV"
+          echo "Perfil PGO: $(stat -c %s /tmp/spm.profdata) bytes"
 
       # Los datos vienen del secreto SPM_DATA_URL (un zip). Se comprueban aquí, antes de instalar nada más.
       - name: Descargar los datos del juego (secreto SPM_DATA_URL)
@@ -291,9 +325,11 @@ jobs:
         run: |
           set -e
           APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
-          NAME="super-paper-mario-${SPM_REGION}.apk"
+          MODE=""
+          if [ -n "$SPM_PGO" ] && [ "$SPM_PGO" != "none" ]; then MODE="-pgo-${SPM_PGO}"; fi
+          NAME="super-paper-mario-${SPM_REGION}${MODE}.apk"
           cp "$APK" "$NAME"
-          TAG="apk-${SPM_REGION}-run${GITHUB_RUN_NUMBER}"
+          TAG="apk-${SPM_REGION}${MODE}-run${GITHUB_RUN_NUMBER}"
           gh release create "$TAG" "$NAME" -R "$GITHUB_REPOSITORY" \
             --title "Super Paper Mario Android (${SPM_REGION}) - run ${GITHUB_RUN_NUMBER}" \
             --notes "APK de Super Paper Mario para Android, región ${SPM_REGION}. Compilado desde el commit ${GITHUB_SHA:0:7}. Instálalo con el zip de datos de la misma región (ver android/README.md)."
@@ -302,6 +338,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: super-paper-mario-${{ inputs.region }}-apk
+          name: super-paper-mario-${{ inputs.region }}-${{ inputs.pgo }}-apk
           path: android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error

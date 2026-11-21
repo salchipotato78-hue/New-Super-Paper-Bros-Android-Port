@@ -46,5 +46,12 @@ bool GameWidescreen();
 bool SurfaceWide();
 // Render height for a scale (480 lines per 1x).
 float LinesForScale(float renderScale);
+// From any thread (the thermal governor). Re-applies the render resolution at the next frame boundary, so a change
+// of the thermal render factor takes effect without a settings change.
+void RefreshRenderer();
+// From the dynamic resolution controller (game thread). A factor on the render lines, 0.25 to 1, applied at the next
+// frame boundary. The player's setting is not changed.
+void SetDynamicScale(float factor);
+float DynamicScale();
 
 } // namespace DisplaySettings

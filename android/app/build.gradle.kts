@@ -12,6 +12,11 @@ val spmRuntimeCmake = System.getenv("SPM_RUNTIME_CMAKE") ?: "../../wiicompiled/r
 // Release signing. CI restores the keystore from the secret SPM_KEYSTORE_BASE64 to SPM_KEYSTORE_PATH, so every build
 // has the same key and can update the one before it. Without it the APK is signed with the debug key.
 val releaseKeystore = System.getenv("SPM_KEYSTORE_PATH")?.takeIf { it.isNotEmpty() }
+// Profile-guided optimization (see runtime/CMakeLists.txt): "generate" builds an instrumented, debuggable APK that
+// writes its profile to the app's files/pgo folder; "use" builds with SPM_PGO_PROFILE (a merged .profdata). Empty or
+// "none" is the normal build.
+val spmPgo = System.getenv("SPM_PGO")?.takeIf { it.isNotEmpty() && it != "none" } ?: ""
+val spmPgoProfile = System.getenv("SPM_PGO_PROFILE") ?: ""
 
 android {
     namespace = "com.superpapermario"
@@ -51,6 +56,12 @@ android {
                     "-DMKW_ANDROID_JNI_PACKAGE=com_superpapermario",
                     "-DMKW_TRANSLATED_COMPILE_JOBS=" + (System.getenv("SPM_JOBS") ?: "4"),
                 )
+                if (spmPgo.isNotEmpty()) {
+                    arguments += "-DMKW_PGO=$spmPgo"
+                    if (spmPgo == "use") {
+                        arguments += "-DMKW_PGO_PROFILE=$spmPgoProfile"
+                    }
+                }
                 if (System.getenv("SPM_CCACHE") == "1") {
                     arguments += listOf(
                         "-DCMAKE_C_COMPILER_LAUNCHER=ccache",
@@ -83,6 +94,8 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            // A generate build must be debuggable so the profile can be pulled with run-as.
+            isDebuggable = spmPgo == "generate"
             signingConfig = if (releaseKeystore != null) {
                 signingConfigs.getByName("spm")
             } else {

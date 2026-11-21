@@ -79,6 +79,29 @@ option(MKW_BUILD_PSQ_TESTS "Build focused PSQ ISA tests" OFF)
 # aurora-main and its third-party tree stay unaffected.
 set(MKW_PROJECT_COMPILE_DEFINITIONS NOMINMAX)
 
+# Profile-guided optimization for the Android build (clang). Two passes:
+#   cmake -DMKW_PGO=generate ...  -> instrumented build; play with a debuggable APK. The runtime
+#                                   writes files/pgo/game.profraw (see runtime/src/android_pgo.cpp).
+#   llvm-profdata merge -o android.profdata game.profraw
+#   cmake -DMKW_PGO=use -DMKW_PGO_PROFILE=/path/android.profdata ...  -> optimized build.
+set(MKW_PGO "" CACHE STRING "PGO pass (Android): empty, generate or use")
+set(MKW_PGO_PROFILE "" CACHE FILEPATH "Android PGO: merged .profdata for -DMKW_PGO=use")
+if(ANDROID AND MKW_PGO STREQUAL "generate")
+    add_compile_options(-fprofile-generate)
+    add_link_options(-fprofile-generate)
+    list(APPEND MKW_PROJECT_COMPILE_DEFINITIONS MKW_PGO_GENERATE=1)
+elseif(ANDROID AND MKW_PGO STREQUAL "use")
+    if(NOT EXISTS "${MKW_PGO_PROFILE}")
+        message(FATAL_ERROR "MKW_PGO=use on Android needs MKW_PGO_PROFILE=<merged .profdata>")
+    endif()
+    # A source edited after the recording only loses its own profile instead of failing the build.
+    add_compile_options("-fprofile-use=${MKW_PGO_PROFILE}" -Wno-profile-instr-unprofiled
+                        -Wno-profile-instr-out-of-date -Wno-backend-plugin)
+    add_link_options("-fprofile-use=${MKW_PGO_PROFILE}")
+elseif(NOT MKW_PGO STREQUAL "")
+    message(FATAL_ERROR "MKW_PGO must be empty, generate or use (Android)")
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 
 # Declared before the vendored libraries so the third-party block below can
@@ -358,6 +381,15 @@ if(MKW_PLATFORM_ANDROID)
     add_compile_definitions(MKW_ANDROID_JNI_PACKAGE=${MKW_ANDROID_JNI_PACKAGE})
 endif()
 
+# Thermal headroom is NaN on devices that cannot report it, and the guard that drops it is
+# `!(headroom > 0.0f)`. -ffinite-math-only (part of -ffast-math) may fold that check away, so this
+# file opts back out of the finite-math assumption, like frame_interpolation.cpp above.
+# SKIP_PRECOMPILE_HEADERS: the shared PCH is built with -ffast-math, and clang refuses to use it
+# from a TU that disables that macro, so this file must not include it (same as the PPC sources above).
+set_source_files_properties("${CMAKE_CURRENT_LIST_DIR}/src/thermal_quality.cpp" PROPERTIES
+    SKIP_UNITY_BUILD_INCLUSION ON
+    SKIP_PRECOMPILE_HEADERS ON
+    COMPILE_OPTIONS "-fno-finite-math-only")
 file(GLOB_RECURSE SOURCES CONFIGURE_DEPENDS "src/*.cpp")
 if(MKW_PLATFORM_MACOS)
     list(REMOVE_ITEM SOURCES "${CMAKE_CURRENT_LIST_DIR}/src/guest_flat_memory.cpp")

@@ -138,6 +138,9 @@ typedef struct {
   // Frontend-owned presentation: no SDL window, swapchain, ImGui or pacing worker.
   // Use aurora/external.h to consume complete frames on the existing Dawn device.
   bool externalPresentation;
+  // Rewrites the bundled seed's pipelines from the previous GX config version (19) to the current one, when their
+  // size matches the current config layout. Read at aurora_initialize, so it takes effect on the next launch.
+  bool migrateStaleSeedPipelines;
 } AuroraConfig;
 
 typedef enum {

@@ -86,6 +86,30 @@ Los botones y su entrada del mando Wii (sideways). Está en `TouchOverlay.contri
 
 > El mapeo sigue la tabla de controles de Super Paper Mario. Los botones se cambian en `TouchOverlay.contribution()`.
 
+## Rendimiento
+
+- **Semilla de shaders.** `runtime/assets/pipeline/initial_pipeline_cache.db` guarda los shaders ya compilados. Una
+  semilla obsoleta hace que cada shader nuevo se compile en el teléfono la primera vez que aparece (tirón). Comprueba
+  la semilla con `python3 tools/android/check-pipeline-seed.py`; el workflow también la comprueba y avisa.
+  - Con `migrate_stale_pipelines` (activado por defecto en Android) el runtime reescribe en el arranque las filas de
+    la versión 19 a la actual, si su tamaño coincide. El log dice cuántas migró o cuántas bloqueó.
+  - Para regenerar la semilla de verdad: juega un rato, copia `pipeline_cache.db` de la carpeta de runtime de la app
+    y ejecuta `python3 tools/android/promote-pipeline-seed.py <ese archivo>`. Después sube `RUNTIME_STAMP` en
+    `SpmApplication.java`, o los teléfonos no copiarán la nueva.
+- **Resolución dinámica y control térmico.** En Android el runtime baja la resolución de render solo mientras la GPU
+  es el cuello de botella (`dynamic_resolution.cpp`), y reduce el render si el teléfono se acerca al throttling
+  (`PowerManager.getThermalHeadroom`, Android 12+, `thermal_quality.cpp`). Nunca cambia la opción del jugador.
+  Si la escena es lenta por la CPU del juego, esto no ayuda: hace falta un perfil.
+- **PGO (optimización guiada por perfil).** Workflow, opción `pgo`:
+  1. `generate`: APK instrumentado y depurable. Juega **todo el juego**, no un solo nivel: menús, cinemáticas,
+     varios mundos y algún nivel de cada tipo (el perfil solo optimiza el código que se ejecutó). Después saca el perfil con
+     `adb shell run-as com.superpapermario cat files/pgo/game.profraw > game.profraw`
+     (espera a que el tamaño deje de cambiar: se escribe cada 20 s).
+  2. Fusiónalo con el `llvm-profdata` del NDK: `llvm-profdata merge -o spm.profdata game.profraw`.
+  3. Sube `spm.profdata` a un enlace de descarga directa y guárdalo en el secreto `SPM_PGO_PROFILE_URL`.
+  4. `use`: APK optimizado con ese perfil. Un perfil de otro commit sigue valiendo para las funciones que no cambiaron;
+     el resto se compila sin perfil (sin error).
+
 ## Estructura
 
 | Ruta | Contenido |

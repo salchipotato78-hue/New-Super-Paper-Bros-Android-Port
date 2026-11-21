@@ -1566,8 +1566,19 @@ int RuntimeMain(int argc, char** argv) {
         if (!auroraResourcesPath.empty()) {
             auroraConfig.resourcesPath = auroraResourcesPath.c_str();
         }
+#if defined(__ANDROID__) && defined(MKW_PGO_GENERATE)
+        void StartAndroidPgoRecording();
+        StartAndroidPgoRecording();
+#endif
         auroraConfig.logCallback = &RuntimeAuroraLogCallback;
+        auroraConfig.migrateStaleSeedPipelines = RuntimeConfigFile::MigrateStalePipelines(false);
+        // Debug lines are formatted and written even when nobody reads them. On a phone that is per-frame work on
+        // the game thread, so Android logs at info unless SPM_LOG_DEBUG is set.
+#if defined(__ANDROID__)
+        auroraConfig.logLevel = std::getenv("SPM_LOG_DEBUG") != nullptr ? LOG_DEBUG : LOG_INFO;
+#else
         auroraConfig.logLevel = LOG_DEBUG;
+#endif
         // NSMBW display settings: aspect_mode, else the older widescreen/force_16_9 keys.
         DisplaySettings::Settings displaySettings;
         displaySettings.aspect = RuntimeConfigFile::AspectMode(

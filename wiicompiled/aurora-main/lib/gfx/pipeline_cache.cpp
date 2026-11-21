@@ -9,6 +9,11 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#if defined(__ANDROID__)
+#include <sys/resource.h>
+#include <sys/types.h>
+#include <unistd.h>
+#endif
 #include <condition_variable>
 #include <deque>
 #include <filesystem>
@@ -93,6 +98,9 @@ static std::mutex g_pipelineCacheWriterMutex;
 static std::deque<PipelineCacheWrite> g_pipelineCacheWriteQueue;
 static absl::flat_hash_set<PipelineRef> g_pipelineCachePendingWrites;
 static bool g_pipelineCacheWriterStop = false;
+// True while the writer thread is committing a batch. Guarded by g_pipelineCacheWriterMutex.
+static bool g_pipelineCacheWriterBusy = false;
+static std::condition_variable g_pipelineCacheDrainedCv;
 static int g_sdlVfsRegisterResult = SQLITE_ERROR;
 
 static SdlVfsSqliteFile* sdl_vfs_file(sqlite3_file* file) {
@@ -611,6 +619,22 @@ static sqlite3* open_pipeline_cache_seed_db(const std::string& path) {
   return seedDb;
 }
 
+// The config version the current build loads for each shader type. A seeded row of any other version can
+// never be loaded, so it is not merged.
+static uint32_t current_config_version(ShaderType type) {
+  switch (type) {
+  case ShaderType::Clear:
+    return clear::ClearPipelineConfigVersion;
+  case ShaderType::GX:
+    return gx::GXPipelineConfigVersion;
+  }
+  return UINT32_MAX;
+}
+
+// The GX config version the bundled seed was built with. Its rows keep the same byte layout as the current config
+// (checked by size before any row is rewritten), so only the version field and the hash need to change.
+constexpr uint32_t MigratableGxConfigVersion = 19;
+
 static void seed_pipeline_cache() {
   if (g_pipelineCacheBroken || g_pipelineCacheDb == nullptr || g_pipelineCacheUpsertStmt == nullptr) {
     return;
@@ -645,6 +669,12 @@ static void seed_pipeline_cache() {
   bool readFailed = false;
   uint32_t mergedRows = 0;
   uint32_t skippedRows = 0;
+  uint32_t staleRows = 0;
+  uint32_t staleGxRows = 0;
+  uint32_t staleVersion = 0;
+  uint32_t migratedRows = 0;
+  uint32_t migrationBlockedRows = 0;
+  const bool migrateStale = g_config.migrateStaleSeedPipelines;
   {
     sqlite::Transaction tx(g_pipelineCacheDb, Log, true);
     if (!tx) {
@@ -669,6 +699,24 @@ static void seed_pipeline_cache() {
         ++skippedRows;
         continue;
       }
+      const auto type = static_cast<ShaderType>(typeValue);
+      const auto rowVersion = static_cast<uint32_t>(configVersionValue);
+      const bool wantsMigration = migrateStale && type == ShaderType::GX && rowVersion == MigratableGxConfigVersion;
+      const bool sizeMatches = configBlobSize == static_cast<int>(sizeof(gx::PipelineConfig));
+      const bool migrate = wantsMigration && sizeMatches;
+      if (rowVersion != current_config_version(type) && !migrate) {
+        // A row from another config version is never loaded (the load query filters on the current version), and
+        // merging it only makes the log claim the shaders were seeded. Count it instead, so the log says so.
+        if (wantsMigration) {
+          ++migrationBlockedRows;  // same version, different layout: the bytes cannot be reused
+        }
+        ++staleRows;
+        if (type == ShaderType::GX) {
+          ++staleGxRows;
+          staleVersion = rowVersion;
+        }
+        continue;
+      }
 
       PipelineCacheWrite write{
           .type = static_cast<ShaderType>(typeValue),
@@ -679,6 +727,23 @@ static void seed_pipeline_cache() {
       };
       if (configBlobSize > 0) {
         std::memcpy(write.config.data(), configBlob, static_cast<size_t>(configBlobSize));
+      }
+
+      if (migrate) {
+        // The row becomes the entry the current build would have written for the same state: same bytes, current
+        // version, and the hash find_pipeline computes for that config (xxh3 of the struct, seeded with the type).
+        gx::PipelineConfig config;
+        std::memcpy(&config, write.config.data(), sizeof(config));
+        config.version = gx::GXPipelineConfigVersion;
+        if (!gx::valid_pipeline_config(config)) {
+          ++skippedRows;
+          continue;
+        }
+        std::memcpy(write.config.data(), &config, sizeof(config));
+        write.configVersion = gx::GXPipelineConfigVersion;
+        write.hash = static_cast<PipelineRef>(
+            xxh3_hash_s(write.config.data(), sizeof(config), static_cast<HashType>(ShaderType::GX)));
+        ++migratedRows;
       }
 
       if (!write_pipeline_cache_record(write)) {
@@ -708,6 +773,20 @@ static void seed_pipeline_cache() {
   if (!readFailed) {
     Log.info("Seeded pipeline cache from '{}' ({} rows merged, {} rows skipped)", seedPath, mergedRows,
              skippedRows);
+  }
+  if (migratedRows > 0) {
+    Log.info("Migrated {} GX pipeline rows from config version {} to {}", migratedRows, MigratableGxConfigVersion,
+             gx::GXPipelineConfigVersion);
+  }
+  if (migrationBlockedRows > 0) {
+    Log.warn("Pipeline migration skipped {} rows: their layout no longer matches the current build", migrationBlockedRows);
+  }
+  if (staleRows > 0) {
+    // This is the stutter a player feels: every GX shader in the seed is ignored, so each new effect compiles on
+    // first use. Either the seed is rebuilt (tools/promote_pipeline_seed.py) or migrate_stale_pipelines is enabled.
+    Log.warn("Bundled pipeline cache is stale: {} rows ignored ({} GX rows at config version {}, current {}). "
+             "New shaders will compile on first use until the seed is regenerated or migrated.",
+             staleRows, staleGxRows, staleVersion, gx::GXPipelineConfigVersion);
   }
 }
 
@@ -916,6 +995,7 @@ static void pipeline_cache_writer() {
       }
       batch.swap(g_pipelineCacheWriteQueue);
       g_pipelineCachePendingWrites.clear();
+      g_pipelineCacheWriterBusy = true;
     }
 
     bool writeFailed = false;
@@ -939,9 +1019,22 @@ static void pipeline_cache_writer() {
     }
 
     if (writeFailed) {
+      {
+        std::lock_guard lock{g_pipelineCacheWriterMutex};
+        // Drop what could not be written so a flush waiting on the queue cannot hang.
+        g_pipelineCacheWriteQueue.clear();
+        g_pipelineCachePendingWrites.clear();
+        g_pipelineCacheWriterBusy = false;
+      }
+      g_pipelineCacheDrainedCv.notify_all();
       pipeline_cache_abort();
       return;
     }
+    {
+      std::lock_guard lock{g_pipelineCacheWriterMutex};
+      g_pipelineCacheWriterBusy = false;
+    }
+    g_pipelineCacheDrainedCv.notify_all();
   }
 }
 
@@ -991,6 +1084,11 @@ static void compile_pending_pipeline(PendingPipeline pending) {
 static void pipeline_worker() {
 #ifdef TRACY_ENABLE
   tracy::SetThreadName("Pipeline compilation thread");
+#endif
+#if defined(__ANDROID__)
+  // Lower nice value = less CPU for this thread when the game thread needs it. Raising the nice
+  // value needs no special permission.
+  setpriority(PRIO_PROCESS, static_cast<id_t>(gettid()), 10);
 #endif
 
   while (true) {
@@ -1050,7 +1148,15 @@ static size_t pipeline_worker_count() {
   }
   const size_t availableWorkers =
       logicalProcessors > ReservedLogicalProcessors ? logicalProcessors - ReservedLogicalProcessors : 1;
+#if defined(__ANDROID__)
+  // Phones: compiling shaders on most cores took CPU time from the game thread and caused the
+  // dips in busy scenes. A single low-priority worker (the same approach DriftDroid uses for its
+  // post-update shader rebuild) keeps the game thread free; new effects just appear a bit later.
+  (void)availableWorkers;
+  return 1;
+#else
   return std::clamp(availableWorkers, size_t{1}, MaxPipelineWorkers);
+#endif
 }
 
 template <typename PipelineConfig, typename CreateFn>
@@ -1188,6 +1294,18 @@ void initialize_pipeline_cache() {
   if (!g_pipelineCacheBroken) {
     start_pipeline_cache_writer();
   }
+}
+
+// Waits until every pipeline already queued for the SQLite cache is committed to disk, without
+// shutting the writer down. Called when the app leaves the screen, because on Android the process
+// can be killed right after and the queued rows would be lost.
+void flush_pipeline_cache_writes() {
+  std::unique_lock lock{g_pipelineCacheWriterMutex};
+  if (!g_pipelineCacheWriterThread.joinable()) {
+    return;
+  }
+  g_pipelineCacheDrainedCv.wait(lock,
+                                [] { return g_pipelineCacheWriteQueue.empty() && !g_pipelineCacheWriterBusy; });
 }
 
 void shutdown_pipeline_cache() {

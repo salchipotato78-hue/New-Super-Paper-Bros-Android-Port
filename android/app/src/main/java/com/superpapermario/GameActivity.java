@@ -1,7 +1,11 @@
 package com.superpapermario;
 
+import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
+import android.os.PowerManager;
 import android.os.Bundle;
 import android.os.Process;
 import android.view.Gravity;
@@ -34,6 +38,7 @@ public class GameActivity extends SDLActivity {
     // Implemented in runtime/src/android/android_bridge.cpp.
     public static native void nativeSetTouchState(int buttons, boolean shake, float tilt);
     public static native void nativeApplyDisplaySettings(int aspect, float renderScale, boolean showFps);
+    public static native void nativeReportThermalHeadroom(float headroom);
     public static native void nativeApplyGraphicsSettings(boolean interp120, boolean vsync, boolean disableCopyFilter);
     public static native int nativeGraphicsSettings();
     public static native int nativeGameLanguage();
@@ -201,12 +206,36 @@ public class GameActivity extends SDLActivity {
         return v == null ? def : v.trim().equals("true");
     }
 
+    // Thermal headroom (Android 12+) forwarded to the runtime about once a second: when the phone is close to
+    // throttling, the runtime renders fewer pixels instead of letting the frame rate fall (runtime/src/thermal_quality.cpp).
+    private static final long THERMAL_POLL_MS = 1000;
+    private final Handler thermalHandler = new Handler(Looper.getMainLooper());
+    private final Runnable thermalPoll = new Runnable() {
+        @Override
+        public void run() {
+            if (Build.VERSION.SDK_INT >= 31) {
+                PowerManager power = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                // NaN when the device cannot forecast; the runtime then leaves the quality alone.
+                nativeReportThermalHeadroom(power.getThermalHeadroom(10));
+            }
+            thermalHandler.postDelayed(this, THERMAL_POLL_MS);
+        }
+    };
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        thermalHandler.removeCallbacks(thermalPoll);
+        thermalHandler.post(thermalPoll);
+    }
+
     @Override
     protected void onPause() {
         // Never leave a button held while the game is in the background.
         if (overlay != null) {
             overlay.releaseAll();
         }
+        thermalHandler.removeCallbacks(thermalPoll);
         super.onPause();
     }
 

@@ -1,3 +1,26 @@
+# Android: rendimiento (semilla de shaders, térmico, resolución dinámica, PGO)
+
+- **Semilla de shaders obsoleta (causa de tirones).** La semilla tenía 1153 pipelines GX en la versión 19; el runtime
+  espera la 20, así que se ignoraban y cada shader se compilaba en el teléfono al aparecer. Portada la migración de
+  Wario (`pipeline_cache.cpp`): reescribe v19→v20 si el tamaño coincide. Activada en Android por defecto
+  (`[video] migrate_stale_pipelines`). **No verificada en un teléfono**: revisa el log del primer arranque.
+- **Compilación de shaders en Android.** Un único worker de baja prioridad en vez de todos los núcleos (compilar en
+  paralelo quitaba CPU al hilo del juego). La cola de escritura se vacía al salir de la app.
+- **Herramientas de semilla** `tools/android/check-pipeline-seed.py` y `promote-pipeline-seed.py` (de Wario, con rutas
+  de SPM). Corregido el check: ahora compara cada tipo de shader con su propia versión (las filas Clear v3 se marcaban
+  como obsoletas). Mismo fallo en la copia de Wario, sin corregir allí.
+- **Resolución dinámica y térmico** portados de Wario: `dynamic_resolution.cpp`, `thermal_quality.cpp`, factores en
+  `display_settings`, hook en `vi.cpp` en cada frame con pacing, JNI `nativeReportThermalHeadroom`, sondeo cada segundo
+  en `GameActivity` (Android 12+). `thermal_quality.cpp` se compila con `-fno-finite-math-only`. El hook de `vi.cpp`
+  usa `paceToRetrace` y no `paceThisFrame`: este último es falso justo en los frames que llegan tarde, y ahí es donde
+  la resolución tiene que bajar. Los frames de menús y cinemáticas pasan por el mismo camino (`gx_copy.cpp`).
+- **PGO** (opcional): CMake `MKW_PGO`, `android_pgo.cpp`, opción `pgo` del workflow y secreto `SPM_PGO_PROFILE_URL`.
+- **Log de Aurora** en Android a `LOG_INFO` (antes `LOG_DEBUG` en cada frame). `SPM_LOG_DEBUG` lo vuelve a debug.
+- **Sin compilar aquí** (sin NDK, Gradle, Dawn ni disco del juego). Verificado: sintaxis de los `.cpp` nuevos que
+  dependen solo de cabeceras del runtime, scripts de semilla con datos sintéticos, workflow YAML y bash.
+
+---
+
 # Android: datos por secreto y workflow optimizado
 
 - **Datos del juego por secreto, no por release.** `android-spm.yml` ya no usa el release `game-data`. Lee un zip
