@@ -93,6 +93,17 @@ android {
         checkReleaseBuilds = false
     }
 
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("spm") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("SPM_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SPM_KEY_ALIAS")
+                keyPassword = System.getenv("SPM_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -103,17 +114,6 @@ android {
             } else {
                 logger.warn("SPM_KEYSTORE_PATH no está definido: se firma con la clave debug, que no puede actualizar una instalación firmada con otra clave.")
                 signingConfigs.getByName("debug")
-            }
-        }
-    }
-
-    signingConfigs {
-        if (releaseKeystore != null) {
-            create("spm") {
-                storeFile = file(releaseKeystore)
-                storePassword = System.getenv("SPM_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("SPM_KEY_ALIAS")
-                keyPassword = System.getenv("SPM_KEY_PASSWORD")
             }
         }
     }
