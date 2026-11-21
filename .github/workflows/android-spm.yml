@@ -263,6 +263,7 @@ jobs:
       - name: Compilar el APK
         working-directory: android
         env:
+          SPM_VERSION_CODE: ${{ github.run_number }}
           SPM_KEYSTORE_PASSWORD: ${{ secrets.SPM_KEYSTORE_PASSWORD }}
           SPM_KEY_ALIAS: ${{ secrets.SPM_KEY_ALIAS }}
           SPM_KEY_PASSWORD: ${{ secrets.SPM_KEY_PASSWORD }}

@@ -32,8 +32,10 @@ android {
         // memfd_create (guest RAM) is in bionic from Android 11 on.
         minSdk = 30
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        // One increasing number per CI run (SPM_VERSION_CODE = the run number), so an update always installs over the
+        // previous build. Without it every build has the same code and Android may refuse a downgrade-looking install.
+        versionCode = (System.getenv("SPM_VERSION_CODE") ?: "1").toInt()
+        versionName = "1.0.${System.getenv("SPM_VERSION_CODE") ?: "0"}"
 
         ndk {
             abiFilters += listOf("arm64-v8a")
