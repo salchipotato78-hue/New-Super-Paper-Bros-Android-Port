@@ -199,6 +199,12 @@ constexpr uint32_t kViRetraceQueueAddr      = 0x8056dd88;  // retraceQueue (NSMB
 // and the time of its last vblank. Displays with no whole fraction near 60 (75, 144 Hz) keep the
 // game's own clock.
 
+#if defined(__ANDROID__)
+extern "C" void SpmAndroidReportFrameWork(int64_t workNanos);
+#else
+inline void SpmAndroidReportFrameWork(int64_t) {}
+#endif
+
 struct DisplayLock {
     bool valid = false;
     int k = 0;
@@ -209,6 +215,20 @@ struct DisplayLock {
     bool logged = false;
 };
 DisplayLock g_displayLock;  // under g_viMutex
+
+// Android: the activity passes the vblank time of each frame (Choreographer's frameTimeNanos, CLOCK_MONOTONIC, the same
+// clock as steady_clock on Android) and the display's refresh rate. Without it the game clock runs free at 60 Hz and
+// frames land on whatever part of the vblank they reach, which is the judder.
+struct AndroidDisplayClock {
+    std::atomic<int64_t> vblankNanos{0};
+    std::atomic<double> hz{0.0};
+};
+AndroidDisplayClock g_androidDisplayClock;
+
+void SetAndroidDisplayClock(int64_t vblankNanos, double hz) {
+    g_androidDisplayClock.hz.store(hz, std::memory_order_release);
+    g_androidDisplayClock.vblankNanos.store(vblankNanos, std::memory_order_release);
+}
 
 #if defined(_WIN32)
 // The game window's own monitor, timed by DXGI WaitForVBlank on a helper thread: its real vblank times and period.
@@ -360,6 +380,27 @@ void RefreshDisplayLockLocked(Clock::time_point now) {
         d.logged = true;
         RT_LOGF(RT_TAG_VI, "V-Sync: display %.3f Hz (DWM %.3f Hz, mode %.3f Hz%s), %s\n", hz, dwmHz, modeHz,
                 d.phaseKnown ? "" : ", no vblank phase",
+                d.valid ? (std::string("game clock locked at ") + std::to_string(k) + " refresh(es) per frame").c_str()
+                        : "no whole fraction near 60 Hz; the game keeps its own clock");
+    }
+#elif defined(__ANDROID__)
+    const int64_t vblank = g_androidDisplayClock.vblankNanos.load(std::memory_order_acquire);
+    const double hz = g_androidDisplayClock.hz.load(std::memory_order_acquire);
+    if (vblank == 0 || hz <= 0.0) {
+        // The activity has not reported a frame yet; keep the game's own clock until it does.
+        d.valid = false;
+        return;
+    }
+    const int k = static_cast<int>(std::lround(hz / 60.0));
+    d.valid = k >= 1 && k <= 8 && std::fabs(hz / k - 60.0) < 60.0 * 0.02;
+    d.k = k;
+    d.period = std::chrono::nanoseconds(static_cast<int64_t>(std::llround(1e9 / hz)));
+    // The most recent vblank is a real vblank time: only its phase modulo the period matters.
+    d.vblank = Clock::time_point(std::chrono::nanoseconds(vblank));
+    d.phaseKnown = true;
+    if (!d.logged) {
+        d.logged = true;
+        RT_LOGF(RT_TAG_VI, "V-Sync: display %.3f Hz (Choreographer), %s\n", hz,
                 d.valid ? (std::string("game clock locked at ") + std::to_string(k) + " refresh(es) per frame").c_str()
                         : "no whole fraction near 60 Hz; the game keeps its own clock");
     }
@@ -838,6 +879,11 @@ bool AdvanceDueRetraces(CpuContext* ctx, int maxToProcess, bool serviceAurora)
 
 } // namespace
 
+// Called by GameActivity through android_bridge.cpp, once per display frame.
+extern "C" void SpmSetAndroidDisplayClock(int64_t vblankNanos, double hz) {
+    SetAndroidDisplayClock(vblankNanos, hz);
+}
+
 // Force one retrace boundary to pass, whether or not its wall-clock deadline
 // has arrived, so the guest's retrace callbacks (AsyncDisplay's counters and
 // friends) run. VI_HLE_PollRetrace below is the time-driven counterpart.
@@ -1172,6 +1218,16 @@ void VI_HLE_PresentFrame(bool presentedXfb, bool paceToRetrace) {
     // (paceThisFrame is false for those, so it must not be the condition) as much as the on-time ones, since the late
     // frames are what says the resolution has to come down. Boot and black VI frames present unpaced and would read as
     // free headroom, so they are left out.
+    // Android: the work this frame took before its vblank wait, for the game thread's performance hint, so the
+    // scheduler gives the thread a frame budget instead of letting it drop to a little core under load. Timing only.
+    if (presentedXfb) {
+        static Clock::time_point s_workLast{};
+        if (s_workLast != Clock::time_point{}) {
+            SpmAndroidReportFrameWork(static_cast<int64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(paceStart - s_workLast).count()));
+        }
+        s_workLast = Clock::now();
+    }
     if (presentedXfb && paceToRetrace) {
         static Clock::time_point s_dynLast{};
         const Clock::time_point now = Clock::now();

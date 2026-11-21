@@ -15,6 +15,7 @@
 #include "runtime_config.h"
 #include "settings_overlay.h"
 #include "thermal_quality.h"
+#include "runtime_log.h"
 #include "virtual_remote.h"
 
 #include "netplay/net_socket.h"
@@ -24,6 +25,11 @@
 
 #include <SDL3/SDL_system.h>
 #include <jni.h>
+
+#include <android/api-level.h>
+#include <android/performance_hint.h>
+#include <sys/syscall.h>
+#include <unistd.h>
 
 #include <chrono>
 #include <cstdint>
@@ -56,6 +62,44 @@ bool RestartGame() {
 } // namespace AndroidBridge
 
 extern "C" {
+
+// GameActivity.nativeSetDisplayClock: called on every display frame by the activity (Choreographer). Gives the game
+// clock the real vblank time and refresh rate, so it locks to the screen instead of running on its own 60 Hz timer.
+extern "C" void SpmSetAndroidDisplayClock(int64_t vblankNanos, double hz);
+JNIEXPORT void JNICALL MKW_JNI(nativeSetDisplayClock)(JNIEnv*, jclass, jlong vblankNanos, jdouble hz)
+{
+    SpmSetAndroidDisplayClock(static_cast<int64_t>(vblankNanos), static_cast<double>(hz));
+}
+
+// Performance hint for the game thread (ADPF, Android 13+). The scheduler otherwise does not know the thread has a
+// per-frame budget, so under load it can stay on a low clock or a little core and miss a vblank (33 ms instead of
+// 16.7 ms). The hint says the frame budget and how much work each frame took before its vblank wait (reported by
+// vi.cpp). It only changes scheduling; emulated timing and output are unchanged.
+namespace {
+APerformanceHintSession* g_guestHintSession = nullptr;
+bool g_guestHintTried = false;
+constexpr int64_t kGuestFrameBudgetNanos = 16666666;  // one frame at 60 Hz, the guest clock
+}  // namespace
+
+extern "C" void SpmAndroidReportFrameWork(int64_t workNanos)
+{
+    // __builtin_available: the hint API is Android 13+, the app's minSdk is 30, so the calls are guarded at run time.
+    if (__builtin_available(android 33, *)) {
+        // The session is bound to the thread that first reports, which is the game thread.
+        if (!g_guestHintTried) {
+            g_guestHintTried = true;
+            if (APerformanceHintManager* manager = APerformanceHint_getManager()) {
+                const int32_t tid = static_cast<int32_t>(syscall(SYS_gettid));
+                g_guestHintSession = APerformanceHint_createSession(manager, &tid, 1, kGuestFrameBudgetNanos);
+            }
+            RT_LOGF(RT_TAG_VI, "ADPF guest hint: api %d, session %s (tid %d)\n", android_get_device_api_level(),
+                    g_guestHintSession ? "created" : "not created", static_cast<int>(syscall(SYS_gettid)));
+        }
+        if (g_guestHintSession != nullptr && workNanos > 0) {
+            APerformanceHint_reportActualWorkDuration(g_guestHintSession, workNanos);
+        }
+    }
+}
 
 // GameActivity.nativeReportThermalHeadroom: PowerManager.getThermalHeadroom, about once a second. Around 1.0 means
 // throttling is imminent; NaN means the device cannot tell (ignored by the runtime).

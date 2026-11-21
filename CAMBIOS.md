@@ -1,3 +1,22 @@
+# Android: reloj de pantalla, performance hint y resto de lo que tiene Wario
+
+- **Reloj del juego enlazado a la pantalla (causa principal del "entrecortado" en Android).** En Android el lock de
+  vsync estaba apagado (la rama no-Windows de `RefreshDisplayLockLocked` ponía `valid = false`), así que el juego iba
+  a 60 Hz libres y los frames caían en cualquier punto del vblank. Ahora `GameActivity` manda el vblank de cada frame
+  (`Choreographer`) y `vi.cpp` lo usa como fase del lock, igual que Wario. Con un flag `displayClockPending` para que
+  pausar y reanudar rápido no duplique la cadena de callbacks.
+- **Performance hint del hilo de juego (ADPF, Android 13+).** Reporta el trabajo de cada frame antes del vblank para que
+  el planificador no baje el hilo a un núcleo lento. Wario tiene el mismo código protegido por `__ANDROID_API__ >= 33`,
+  pero el nivel de API nativo sale de `minSdk` (29), así que ese bloque nunca se compila. Aquí se usa
+  `__builtin_available(android 33, *)`, que decide en ejecución con `minSdk = 30`.
+- **Resto de cambios de esta ronda:** semilla de shaders (migración v19→v20), worker de shaders de baja prioridad,
+  resolución dinámica y térmico, PGO opcional, log de Aurora en `LOG_INFO`. Todo solo para Android. Ver las entradas
+  anteriores.
+- **Sin compilar aquí.** Verificado: balance de llaves de los archivos editados, sintaxis de los `.cpp` que dependen solo
+  de cabeceras del runtime, scripts de semilla con datos sintéticos, workflow YAML y bash.
+
+---
+
 # Android: rendimiento (semilla de shaders, térmico, resolución dinámica, PGO)
 
 - **Semilla de shaders obsoleta (causa de tirones).** La semilla tenía 1153 pipelines GX en la versión 19; el runtime

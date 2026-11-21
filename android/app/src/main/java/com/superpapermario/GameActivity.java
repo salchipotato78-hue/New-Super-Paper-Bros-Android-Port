@@ -3,6 +3,7 @@ package com.superpapermario;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
+import android.view.Choreographer;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -39,6 +40,7 @@ public class GameActivity extends SDLActivity {
     public static native void nativeSetTouchState(int buttons, boolean shake, float tilt);
     public static native void nativeApplyDisplaySettings(int aspect, float renderScale, boolean showFps);
     public static native void nativeReportThermalHeadroom(float headroom);
+    public static native void nativeSetDisplayClock(long vblankNanos, double hz);
     public static native void nativeApplyGraphicsSettings(boolean interp120, boolean vsync, boolean disableCopyFilter);
     public static native int nativeGraphicsSettings();
     public static native int nativeGameLanguage();
@@ -206,6 +208,41 @@ public class GameActivity extends SDLActivity {
         return v == null ? def : v.trim().equals("true");
     }
 
+    // The game clock follows the screen: every display frame's vblank time goes to the runtime (Choreographer), so
+    // frames are timed to the real vblanks instead of a free-running 60 Hz timer. Stopped while the app is paused.
+    private Choreographer.FrameCallback displayClock;
+    private boolean displayClockOn;
+    // True while a frame callback is queued. Keeps a quick pause and resume from queuing a second chain, which would
+    // call nativeSetDisplayClock twice per frame.
+    private boolean displayClockPending;
+
+    private void startDisplayClock() {
+        displayClockOn = true;
+        if (displayClock == null) {
+            displayClock = new Choreographer.FrameCallback() {
+                @Override
+                public void doFrame(long frameTimeNanos) {
+                    displayClockPending = false;
+                    if (!displayClockOn) {
+                        return;
+                    }
+                    double hz = getWindowManager().getDefaultDisplay().getRefreshRate();
+                    nativeSetDisplayClock(frameTimeNanos, hz);
+                    displayClockPending = true;
+                    Choreographer.getInstance().postFrameCallback(this);
+                }
+            };
+        }
+        if (!displayClockPending) {
+            displayClockPending = true;
+            Choreographer.getInstance().postFrameCallback(displayClock);
+        }
+    }
+
+    private void stopDisplayClock() {
+        displayClockOn = false;
+    }
+
     // Thermal headroom (Android 12+) forwarded to the runtime about once a second: when the phone is close to
     // throttling, the runtime renders fewer pixels instead of letting the frame rate fall (runtime/src/thermal_quality.cpp).
     private static final long THERMAL_POLL_MS = 1000;
@@ -225,6 +262,7 @@ public class GameActivity extends SDLActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        startDisplayClock();
         thermalHandler.removeCallbacks(thermalPoll);
         thermalHandler.post(thermalPoll);
     }
@@ -236,6 +274,7 @@ public class GameActivity extends SDLActivity {
             overlay.releaseAll();
         }
         thermalHandler.removeCallbacks(thermalPoll);
+        stopDisplayClock();
         super.onPause();
     }
 

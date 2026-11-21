@@ -96,6 +96,11 @@ Los botones y su entrada del mando Wii (sideways). Está en `TouchOverlay.contri
   - Para regenerar la semilla de verdad: juega un rato, copia `pipeline_cache.db` de la carpeta de runtime de la app
     y ejecuta `python3 tools/android/promote-pipeline-seed.py <ese archivo>`. Después sube `RUNTIME_STAMP` en
     `SpmApplication.java`, o los teléfonos no copiarán la nueva.
+- **Reloj de pantalla (vsync).** `GameActivity` manda el vblank de cada frame (`Choreographer`) y el runtime sincroniza
+  el reloj del juego a la pantalla. Sin esto, el juego va a 60 Hz libres y los frames se ven entrecortados. Se desactiva
+  con la opción de vsync del menú.
+- **Performance hint (ADPF, Android 13+).** Pide al sistema que mantenga el hilo de juego en un núcleo rápido. Solo
+  cambia la planificación, no el resultado del juego.
 - **Resolución dinámica y control térmico.** En Android el runtime baja la resolución de render solo mientras la GPU
   es el cuello de botella (`dynamic_resolution.cpp`), y reduce el render si el teléfono se acerca al throttling
   (`PowerManager.getThermalHeadroom`, Android 12+, `thermal_quality.cpp`). Nunca cambia la opción del jugador.
