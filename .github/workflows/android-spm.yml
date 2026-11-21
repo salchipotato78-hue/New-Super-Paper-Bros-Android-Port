@@ -1,0 +1,215 @@
+# Super Paper Mario para Android (arm64): el APK se compila entero en GitHub Actions.
+#
+# El juego NO está en el repositorio. Hace falta un release llamado "game-data" en tu fork con archivos
+# sacados de TUS discos (ver android/README.md):
+#   main.dol      sys/main.dol de USA (R8PE01 rev. 0, SHA-256 0d7487bc...)     -- siempre
+#   relF.bin      files/rel/relF.bin de USA                                   -- siempre
+#   main-eu.dol   sys/main.dol de Europa (R8PP01, original sin el mod HQ)     -- solo para region europa
+#   relF-eu.bin   files/rel/relF.bin de Europa                                -- solo para region europa
+name: Android APK (Super Paper Mario)
+
+on:
+  workflow_dispatch:
+    inputs:
+      region:
+        description: "Versión del juego: usa (R8PE01 rev. 0) o europa (R8PP01)"
+        type: choice
+        options:
+          - usa
+          - europa
+        default: usa
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    # Needed to create the release with the APK (the default token is read-only on forks).
+    permissions:
+      contents: write
+    env:
+      SDL_VERSION: "3.4.4"                   # = AURORA_SDL3_VERSION en wiicompiled/aurora-main/CMakeLists.txt
+      NDK_VERSION: "29.0.14206865"           # el NDK con el que se probó el runtime (tools/android/README)
+      SPM_JOBS: "4"
+      SPM_CCACHE: "1"
+      SPM_REGION: ${{ inputs.region }}
+      CCACHE_DIR: /home/runner/.cache/ccache-spm
+      CCACHE_MAXSIZE: "3G"
+      CCACHE_BASEDIR: ${{ github.workspace }}
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Liberar espacio en el runner
+        run: |
+          echo "Antes:"; df -h /
+          sudo rm -rf /opt/ghc /usr/local/share/boost /usr/share/swift /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/az_* /usr/lib/google-cloud-sdk \
+            /usr/local/lib/android/sdk/system-images /usr/local/lib/android/sdk/emulator || true
+          sudo docker image prune --all --force || true
+          echo "Después:"; df -h /
+
+      - name: Cache del NDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
+          key: android-ndk-${{ env.NDK_VERSION }}
+
+      - name: Descargar los datos del juego (release game-data)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          mkdir -p /tmp/game
+          FILES=(-p main.dol -p relF.bin)
+          if [ "$SPM_REGION" = "europa" ]; then FILES+=(-p main-eu.dol -p relF-eu.bin); fi
+          gh release download game-data -R "$GITHUB_REPOSITORY" "${FILES[@]}" -D /tmp/game \
+            || { echo "::error::No encuentro el release 'game-data' con los archivos de la región $SPM_REGION (ver android/README.md)."; exit 1; }
+          test -s /tmp/game/relF.bin || { echo "::error::relF.bin (USA) está vacío."; exit 1; }
+          GOT=$(sha256sum /tmp/game/main.dol | cut -d' ' -f1)
+          echo "main.dol (USA) descargado: $(stat -c %s /tmp/game/main.dol) bytes, SHA-256 $GOT"
+          if [ "$GOT" != "0d7487bc387ee1e905be335acc1e25300eb28bb8949667f753f038dbd9cf53b3" ]; then
+            echo "::error::El main.dol USA del release no es el original de R8PE01 rev. 0 (esperado 0d7487bc...)."
+            if [ "$GOT" = "cd3b5662f61369d5ff946098033be69de8084a20b0dfd3c3d4f4819eed6d21ac" ]; then
+              echo "::error::Es el main.dol CON el mod de música HQ. Sube el sys/main.dol original."
+            fi
+            exit 1
+          fi
+          if [ "$SPM_REGION" = "europa" ]; then
+            test -s /tmp/game/main-eu.dol && test -s /tmp/game/relF-eu.bin \
+              || { echo "::error::Faltan main-eu.dol o relF-eu.bin en el release."; exit 1; }
+            echo "main-eu.dol descargado: $(stat -c %s /tmp/game/main-eu.dol) bytes"
+          fi
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Instalar paquetes del SDK (plataforma, build-tools, NDK, CMake)
+        run: |
+          SDKMANAGER="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -n 1)"
+          yes | "$SDKMANAGER" --licenses > /dev/null
+          if [ -d "$ANDROID_HOME/ndk/${NDK_VERSION}" ]; then
+            "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "cmake;3.31.6"
+          else
+            "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;${NDK_VERSION}" "cmake;3.31.6"
+          fi
+          NDK_PATH="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          {
+            echo "ANDROID_NDK_HOME=$NDK_PATH"
+            echo "ANDROID_NDK_ROOT=$NDK_PATH"
+            echo "ANDROID_NDK_LATEST_HOME=$NDK_PATH"
+            echo "ANDROID_NDK=$NDK_PATH"
+          } >> "$GITHUB_ENV"
+
+      - name: Preparar las entradas de la región
+        run: |
+          ARGS=(--usa-dol /tmp/game/main.dol --usa-rel /tmp/game/relF.bin)
+          if [ "$SPM_REGION" = "europa" ]; then
+            ARGS+=(--eu-dol /tmp/game/main-eu.dol --eu-rel /tmp/game/relF-eu.bin)
+          fi
+          # Also writes SPM_GAME_ID, SPM_GAME_REVISION, SPM_DOL_SHA and SPM_RUNTIME_CMAKE for the rest of the job.
+          python3 tools/android/build-region.py prepare --region "$SPM_REGION" "${ARGS[@]}"
+
+      # La traducción solo depende de los datos de la región, del traductor, del proyecto y del runtime.
+      - name: Restaurar el código traducido
+        id: gen
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            wiicompiled/generated
+            wiicompiled/build/base
+            wiicompiled/pal/generated
+            wiicompiled/pal/build/base
+          key: spm-translated-${{ inputs.region }}-${{ hashFiles('game/main.dol.orig', 'game/spm_linked.rel', 'game_pal/main.dol.orig', 'game_pal/spm_linked.rel', 'wiicompiled/translator/**', 'wiicompiled/projects/**', 'wiicompiled/runtime/src/**') }}
+
+      - name: Construir el traductor
+        if: steps.gen.outputs.cache-hit != 'true'
+        run: |
+          DOTNET="$(which dotnet)"
+          "$DOTNET" restore wiicompiled/translator/src/Translator.Cli/Translator.Cli.csproj
+          python3 tools/android/pipeline.py translator --dotnet "$DOTNET"
+
+      - name: Traducir el juego (traductor de WiiCompiled)
+        if: steps.gen.outputs.cache-hit != 'true'
+        run: python3 tools/android/build-region.py translate --region "$SPM_REGION" --dotnet "$(which dotnet)" --jobs "$SPM_JOBS"
+
+      - name: Guardar el código traducido
+        if: steps.gen.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            wiicompiled/generated
+            wiicompiled/build/base
+            wiicompiled/pal/generated
+            wiicompiled/pal/build/base
+          key: spm-translated-${{ inputs.region }}-${{ hashFiles('game/main.dol.orig', 'game/spm_linked.rel', 'game_pal/main.dol.orig', 'game_pal/spm_linked.rel', 'wiicompiled/translator/**', 'wiicompiled/projects/**', 'wiicompiled/runtime/src/**') }}
+
+      - name: Descargar el glue Java de SDL3 (misma versión que el runtime)
+        run: |
+          mkdir -p /tmp/sdl
+          curl -fL -o /tmp/sdl/sdl.tar.gz "https://github.com/libsdl-org/SDL/archive/refs/tags/release-${SDL_VERSION}.tar.gz"
+          tar xzf /tmp/sdl/sdl.tar.gz -C /tmp/sdl
+          SRC="/tmp/sdl/SDL-release-${SDL_VERSION}/android-project/app/src/main/java/org/libsdl"
+          mkdir -p android/app/src/main/java/org
+          cp -r "$SRC" android/app/src/main/java/org/
+          # El SDL original NO avisa a Aurora de que la superficie existe (auroraNativeSetSurfaceReady) ni da
+          # 64 MB de pila al hilo del juego: sin esto Aurora cree que la app está en pausa, descarta todos los
+          # frames y el juego se cae en DEMOInit/GXCopyDisp. Se superponen los dos archivos parcheados.
+          cp -r android/sdl-overlay/org/libsdl/app/. android/app/src/main/java/org/libsdl/app/
+          grep -q auroraNativeSetSurfaceReady android/app/src/main/java/org/libsdl/app/SDLSurface.java
+          grep -q "64L \* 1024 \* 1024" android/app/src/main/java/org/libsdl/app/SDLActivity.java
+
+      - name: Instalar ccache
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ccache
+
+      - name: Restaurar ccache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-spm-${{ github.run_id }}
+          restore-keys: |
+            ccache-spm-
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Compilar el APK
+        working-directory: android
+        run: |
+          ccache --zero-stats
+          gradle :app:assembleRelease --no-daemon --stacktrace
+          ccache --show-stats
+
+      - name: Guardar ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ccache-spm-${{ github.run_id }}
+
+      - name: Publicar el APK como release de GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
+          NAME="super-paper-mario-${SPM_REGION}.apk"
+          cp "$APK" "$NAME"
+          TAG="apk-${SPM_REGION}-run${GITHUB_RUN_NUMBER}"
+          gh release create "$TAG" "$NAME" -R "$GITHUB_REPOSITORY" \
+            --title "Super Paper Mario Android (${SPM_REGION}) - run ${GITHUB_RUN_NUMBER}" \
+            --notes "APK de Super Paper Mario para Android, región ${SPM_REGION}. Compilado desde el commit ${GITHUB_SHA:0:7}. Instálalo con el zip de datos de la misma región (ver android/README.md)."
+          echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: super-paper-mario-${{ inputs.region }}-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
