@@ -17,12 +17,16 @@ El juego **no está en el repositorio**. Cada uno usa sus propios datos.
 ## Qué necesita el workflow
 
 - **En el repositorio:** el código tal cual está en el zip, con `.github/workflows/android-spm.yml`.
-- **En GitHub (una vez):** el release `game-data` con estos archivos, con esos nombres exactos:
+- **En GitHub (una vez):** el secreto `SPM_DATA_URL`, un enlace de descarga directa a un `.zip` con estos archivos
+  (la carpeta en la que estén no importa, se buscan por nombre):
   - `main.dol` y `relF.bin` del disco **USA** (siempre; para Europa también hacen falta, porque el runtime europeo
     se genera a partir de ellos, igual que en el PC).
   - `main-eu.dol` y `relF-eu.bin` del disco **europeo**, solo si compilas la región Europa.
 - **Nada más:** el SDL de Java lo descarga el propio workflow, y el código traducido se genera en la ejecución.
 - **No hace falta** el zip completo del juego: ese solo va al teléfono.
+- **Opcional:** los secretos `SPM_KEYSTORE_BASE64`, `SPM_KEYSTORE_PASSWORD`, `SPM_KEY_ALIAS` y `SPM_KEY_PASSWORD`
+  con un keystore de release. Sin ellos cada APK se firma con una clave distinta y no puede actualizar al anterior
+  (habría que desinstalar, y se pierden las partidas).
 
 ## Región
 
@@ -40,11 +44,18 @@ Necesitas tu disco de Super Paper Mario USA (R8PE01, revisión 0). Saca de él:
 | `main-eu.dol` | `sys/main.dol` (Europa, original sin el mod HQ) | Solo región europea |
 | `relF-eu.bin` | `files/rel/relF.bin` (Europa) | Solo región europea |
 
-**En GitHub:** crea un *release* llamado **`game-data`** en tu fork y sube esos dos archivos con esos nombres exactos.
-Son pocos MB, así que no pasan el límite de GitHub.
+**En GitHub:** sube esos archivos a un `.zip` y guárdalo en un sitio con enlace de descarga directa (Dropbox sirve
+si el enlace termina en `dl=1` o en `dl=0`, que el workflow cambia; Google Drive no es fiable). Después crea el secreto
+**`SPM_DATA_URL`** en *Settings → Secrets and variables → Actions* con ese enlace.
+
+- Para la **región usa** basta con un zip de la carpeta **DATA** del disco USA (ya tiene `sys/main.dol` y
+  `files/rel/relF.bin`).
+- Para la **región europa**, añade al mismo zip el `main.dol` y el `relF.bin` europeos **renombrados** a
+  `main-eu.dol` y `relF-eu.bin`. Así no chocan con los de USA. Si el zip tiene dos copias distintas del mismo
+  nombre, el workflow se para con un mensaje claro.
 
 **En el teléfono:** haz un `.zip` de la carpeta **DATA** de tu disco de la **misma región** que el APK (debe tener
-`sys/main.dol`, `sys/boot.bin`, `sys/fst.bin` y `files/`). Es el zip completo, no el release.
+`sys/main.dol`, `sys/boot.bin`, `sys/fst.bin` y `files/`). Es el zip completo; el secreto `SPM_DATA_URL` solo necesita los archivos de la tabla de arriba.
 
 ## 2. Compilar el APK
 
@@ -86,6 +97,7 @@ Los botones y su entrada del mando Wii (sideways). Está en `TouchOverlay.contri
 | `…/SpmApplication.java` | Desempaqueta el runtime y guarda el último error |
 | `android/app/src/main/res/drawable-nodpi/` | Arte de `paper-mario-touch` |
 | `wiicompiled/runtime/src/android/android_bridge.cpp` | JNI: `nativeSetTouchState`, `nativeApplyDisplaySettings` |
+| `tools/android/extract-game-data.py` | Saca del zip de `SPM_DATA_URL` los archivos de la región y los verifica |
 | `tools/android/build-region.py` | Prepara las entradas de cada región y traduce (USA o Europa) |
 | `.github/workflows/android-spm.yml` | El workflow que compila el APK |
 

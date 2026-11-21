@@ -1,3 +1,26 @@
+# Android: datos por secreto y workflow optimizado
+
+- **Datos del juego por secreto, no por release.** `android-spm.yml` ya no usa el release `game-data`. Lee un zip
+  del secreto `SPM_DATA_URL` (enlace de descarga directa) y `tools/android/extract-game-data.py` saca los archivos de
+  la región, los verifica (SHA-256 de `main.dol` USA y que no sea la versión con el mod HQ) y para el job pronto si algo
+  falla. Ver `android/README.md`.
+- **Firma de release opcional.** Con `SPM_KEYSTORE_BASE64`, `SPM_KEYSTORE_PASSWORD`, `SPM_KEY_ALIAS` y
+  `SPM_KEY_PASSWORD` cada APK se firma con la misma clave y actualiza al anterior sin desinstalar. Sin ellos sigue
+  firmando con la clave debug, que cambia en cada run del runner.
+- **ccache.** `CCACHE_COMPILERCHECK` fijado a la versión del NDK (la caché sobrevive a restaurar el NDK). Se guarda
+  solo si no había nada que restaurar o si más del 3 % de las compilaciones falló (comparación sin división entera).
+  ccache solo se instala si falta.
+- **SDK.** Caché de platform, build-tools y cmake; `sdkmanager` solo corre si falta algo.
+- **Paralelismo.** Trabajos calculados con núcleos y RAM (misma regla que el workflow de Wario).
+- **Sin cambios a propósito:** la clave de la traducción sigue incluyendo `wiicompiled/runtime/src/**`. La traducción
+  base lee ese código (ABI declaradas, efectos de funciones nativas, exclusiones), así que no se puede reutilizar tras
+  un cambio en el runtime.
+- **Limpieza.** Eliminados `tools/android/ci-prepare-inputs.py` (no lo usaba nada y documentaba el release) y dos
+  archivos `.orig` sueltos.
+- **Sin compilar aquí** (no hay NDK, Gradle ni el disco del juego): la primera ejecución del workflow dirá si algo falla.
+
+---
+
 # Diagnóstico de rendimiento (en curso)
 
 Logs de cuatro partidas: todos los fotogramas lentos son de la escena `0xA418`, con `game` de 30 a 40 ms y `gx` a 0.

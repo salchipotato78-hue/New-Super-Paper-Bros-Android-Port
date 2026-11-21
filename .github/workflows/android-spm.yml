@@ -1,11 +1,17 @@
 # Super Paper Mario para Android (arm64): el APK se compila entero en GitHub Actions.
 #
-# El juego NO está en el repositorio. Hace falta un release llamado "game-data" en tu fork con archivos
-# sacados de TUS discos (ver android/README.md):
+# El juego NO está en el repositorio. Crea un secreto del repositorio SPM_DATA_URL (Settings → Secrets and
+# variables → Actions) con un enlace de descarga directa a un .zip que contenga estos archivos, con estos
+# nombres (la carpeta en la que estén no importa; ver android/README.md):
 #   main.dol      sys/main.dol de USA (R8PE01 rev. 0, SHA-256 0d7487bc...)     -- siempre
 #   relF.bin      files/rel/relF.bin de USA                                   -- siempre
-#   main-eu.dol   sys/main.dol de Europa (R8PP01, original sin el mod HQ)     -- solo para region europa
-#   relF-eu.bin   files/rel/relF.bin de Europa                                -- solo para region europa
+#   main-eu.dol   sys/main.dol de Europa (R8PP01, original sin el mod HQ)     -- solo para región europa
+#   relF-eu.bin   files/rel/relF.bin de Europa                                -- solo para región europa
+# Un zip de la carpeta DATA del disco USA sirve tal cual para la región usa.
+#
+# Opcional, para que cada APK actualice al anterior sin desinstalar (y sin perder las partidas): los secretos
+# SPM_KEYSTORE_BASE64 (keystore en base64), SPM_KEYSTORE_PASSWORD, SPM_KEY_ALIAS y SPM_KEY_PASSWORD.
+# Sin ellos el APK se firma con la clave debug, que cambia en cada run del runner.
 name: Android APK (Super Paper Mario)
 
 on:
@@ -29,12 +35,14 @@ jobs:
     env:
       SDL_VERSION: "3.4.4"                   # = AURORA_SDL3_VERSION en wiicompiled/aurora-main/CMakeLists.txt
       NDK_VERSION: "29.0.14206865"           # el NDK con el que se probó el runtime (tools/android/README)
-      SPM_JOBS: "4"
       SPM_CCACHE: "1"
       SPM_REGION: ${{ inputs.region }}
       CCACHE_DIR: /home/runner/.cache/ccache-spm
       CCACHE_MAXSIZE: "3G"
       CCACHE_BASEDIR: ${{ github.workspace }}
+      # Con el compilador fijado a la versión del NDK la caché de objetos sobrevive a que el NDK se restaure
+      # de la caché con otras fechas (por defecto ccache usa la fecha del compilador y eso la invalida).
+      CCACHE_COMPILERCHECK: "string:29.0.14206865"
       ANDROID_HOME: /usr/local/lib/android/sdk
       ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
@@ -49,37 +57,39 @@ jobs:
           sudo docker image prune --all --force || true
           echo "Después:"; df -h /
 
+      # El número de trabajos en paralelo: el menor entre los núcleos y (RAM - 6 GB) / 2, porque cada shard
+      # de código traducido necesita unos 2 GB para compilarse (la misma regla que tools/build-spm.ps1).
+      - name: Calcular trabajos en paralelo
+        run: |
+          cores=$(nproc)
+          ram_gb=$(awk '/MemTotal/ {printf "%d", $2 / 1024 / 1024}' /proc/meminfo)
+          jobs=$(( (ram_gb - 6) / 2 ))
+          if [ "$jobs" -gt "$cores" ]; then jobs=$cores; fi
+          if [ "$jobs" -lt 1 ]; then jobs=1; fi
+          echo "SPM_JOBS=$jobs" >> "$GITHUB_ENV"
+          echo "Trabajos en paralelo: $jobs (núcleos $cores, RAM ${ram_gb} GB)"
+
       - name: Cache del NDK
         uses: actions/cache@v4
         with:
           path: ${{ env.ANDROID_HOME }}/ndk/${{ env.NDK_VERSION }}
           key: android-ndk-${{ env.NDK_VERSION }}
 
-      - name: Descargar los datos del juego (release game-data)
+      # Los datos vienen del secreto SPM_DATA_URL (un zip). Se comprueban aquí, antes de instalar nada más.
+      - name: Descargar los datos del juego (secreto SPM_DATA_URL)
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SPM_DATA_URL: ${{ secrets.SPM_DATA_URL }}
         run: |
           set -e
-          mkdir -p /tmp/game
-          FILES=(-p main.dol -p relF.bin)
-          if [ "$SPM_REGION" = "europa" ]; then FILES+=(-p main-eu.dol -p relF-eu.bin); fi
-          gh release download game-data -R "$GITHUB_REPOSITORY" "${FILES[@]}" -D /tmp/game \
-            || { echo "::error::No encuentro el release 'game-data' con los archivos de la región $SPM_REGION (ver android/README.md)."; exit 1; }
-          test -s /tmp/game/relF.bin || { echo "::error::relF.bin (USA) está vacío."; exit 1; }
-          GOT=$(sha256sum /tmp/game/main.dol | cut -d' ' -f1)
-          echo "main.dol (USA) descargado: $(stat -c %s /tmp/game/main.dol) bytes, SHA-256 $GOT"
-          if [ "$GOT" != "0d7487bc387ee1e905be335acc1e25300eb28bb8949667f753f038dbd9cf53b3" ]; then
-            echo "::error::El main.dol USA del release no es el original de R8PE01 rev. 0 (esperado 0d7487bc...)."
-            if [ "$GOT" = "cd3b5662f61369d5ff946098033be69de8084a20b0dfd3c3d4f4819eed6d21ac" ]; then
-              echo "::error::Es el main.dol CON el mod de música HQ. Sube el sys/main.dol original."
-            fi
+          if [ -z "$SPM_DATA_URL" ]; then
+            echo "::error::Falta el secreto SPM_DATA_URL: un enlace de descarga directa a un .zip con los datos del juego (ver android/README.md)."
             exit 1
           fi
-          if [ "$SPM_REGION" = "europa" ]; then
-            test -s /tmp/game/main-eu.dol && test -s /tmp/game/relF-eu.bin \
-              || { echo "::error::Faltan main-eu.dol o relF-eu.bin en el release."; exit 1; }
-            echo "main-eu.dol descargado: $(stat -c %s /tmp/game/main-eu.dol) bytes"
-          fi
+          # Dropbox devuelve una página de vista previa salvo que se pida la descarga (dl=1).
+          URL="${SPM_DATA_URL/dl=0/dl=1}"
+          curl -fL --retry 3 -o /tmp/game-data.zip "$URL" \
+            || { echo "::error::No pude descargar SPM_DATA_URL. Debe ser un enlace de descarga directa."; exit 1; }
+          python3 tools/android/extract-game-data.py /tmp/game-data.zip /tmp/game --region "$SPM_REGION" --github
 
       - uses: actions/setup-java@v4
         with:
@@ -90,16 +100,32 @@ jobs:
         with:
           dotnet-version: "8.0.x"
 
+      # sdkmanager consulta el índice de Google en cada llamada (más de un minuto aunque no baje nada), así que
+      # estos paquetes se guardan en caché y solo se instalan si faltan.
+      - name: Cache de paquetes del SDK
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.ANDROID_HOME }}/platforms/android-35
+            ${{ env.ANDROID_HOME }}/build-tools/35.0.0
+            ${{ env.ANDROID_HOME }}/cmake/3.31.6
+          key: android-sdk-pkgs-35-35.0.0-3.31.6
+
       - name: Instalar paquetes del SDK (plataforma, build-tools, NDK, CMake)
         run: |
           SDKMANAGER="$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -n 1)"
-          yes | "$SDKMANAGER" --licenses > /dev/null
-          if [ -d "$ANDROID_HOME/ndk/${NDK_VERSION}" ]; then
-            "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "cmake;3.31.6"
-          else
-            "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;${NDK_VERSION}" "cmake;3.31.6"
-          fi
           NDK_PATH="$ANDROID_HOME/ndk/${NDK_VERSION}"
+          if [ -d "$ANDROID_HOME/platforms/android-35" ] && [ -d "$ANDROID_HOME/build-tools/35.0.0" ] \
+             && [ -d "$ANDROID_HOME/cmake/3.31.6" ] && [ -d "$NDK_PATH" ]; then
+            echo "::notice::Paquetes del SDK ya presentes (caché): se omite sdkmanager."
+          else
+            yes | "$SDKMANAGER" --licenses > /dev/null
+            if [ -d "$NDK_PATH" ]; then
+              "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "cmake;3.31.6"
+            else
+              "$SDKMANAGER" "platforms;android-35" "build-tools;35.0.0" "ndk;${NDK_VERSION}" "cmake;3.31.6"
+            fi
+          fi
           {
             echo "ANDROID_NDK_HOME=$NDK_PATH"
             echo "ANDROID_NDK_ROOT=$NDK_PATH"
@@ -116,7 +142,9 @@ jobs:
           # Also writes SPM_GAME_ID, SPM_GAME_REVISION, SPM_DOL_SHA and SPM_RUNTIME_CMAKE for the rest of the job.
           python3 tools/android/build-region.py prepare --region "$SPM_REGION" "${ARGS[@]}"
 
-      # La traducción solo depende de los datos de la región, del traductor, del proyecto y del runtime.
+      # La traducción depende de los datos de la región, del traductor, del proyecto y del runtime. El runtime
+      # se incluye en la clave a propósito: la traducción base lee runtime/src (ABI declaradas, efectos de las
+      # funciones nativas y exclusiones), así que un cambio ahí puede cambiar el código generado.
       - name: Restaurar el código traducido
         id: gen
         uses: actions/cache/restore@v4
@@ -166,12 +194,18 @@ jobs:
           grep -q "64L \* 1024 \* 1024" android/app/src/main/java/org/libsdl/app/SDLActivity.java
 
       - name: Instalar ccache
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ccache
+        run: |
+          if ! command -v ccache > /dev/null; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq ccache
+          fi
+          ccache --version | head -n 1
 
       - name: Restaurar ccache
+        id: ccache
         uses: actions/cache/restore@v4
         with:
           path: ${{ env.CCACHE_DIR }}
+          # Cada run restaura la última entrada y guarda la suya (si hace falta, ver "Guardar ccache").
           key: ccache-spm-${{ github.run_id }}
           restore-keys: |
             ccache-spm-
@@ -180,15 +214,72 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      # La clave de release: la misma en cada build permite instalar una versión nueva sobre la anterior.
+      - name: Restaurar la clave de firma de release
+        env:
+          SPM_KEYSTORE_BASE64: ${{ secrets.SPM_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$SPM_KEYSTORE_BASE64" ]; then
+            echo "$SPM_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/spm-release.jks"
+            echo "SPM_KEYSTORE_PATH=$RUNNER_TEMP/spm-release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::Falta el secreto SPM_KEYSTORE_BASE64: el APK se firma con la clave debug y no podrá actualizar una instalación firmada con otra clave."
+          fi
+
       - name: Compilar el APK
         working-directory: android
+        env:
+          SPM_KEYSTORE_PASSWORD: ${{ secrets.SPM_KEYSTORE_PASSWORD }}
+          SPM_KEY_ALIAS: ${{ secrets.SPM_KEY_ALIAS }}
+          SPM_KEY_PASSWORD: ${{ secrets.SPM_KEY_PASSWORD }}
+          # Diagnóstico: por qué ccache no acierta (ver el artefacto ccache-log).
+          CCACHE_LOGFILE: ${{ runner.temp }}/ccache.log
         run: |
           ccache --zero-stats
+          start=$(date +%s)
           gradle :app:assembleRelease --no-daemon --stacktrace
-          ccache --show-stats
+          echo "BUILD_SECONDS=$(( $(date +%s) - start ))" >> "$GITHUB_ENV"
+
+      # Se ejecuta aunque falle el build: la tasa de aciertos dice si la caché de objetos funciona.
+      # Escribe los números en el resumen del job y decide si merece la pena volver a guardar ccache.
+      - name: Estadísticas de ccache
+        id: ccstats
+        if: always()
+        run: |
+          # El job puede pararse antes del build (por ejemplo, si faltan los datos): entonces ccache no se usó.
+          if ! command -v ccache > /dev/null || [ ! -d "$CCACHE_DIR" ]; then
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            echo "save=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::ccache no se usó en este run (el job se detuvo antes del build)."
+            exit 0
+          fi
+          echo "has=true" >> "$GITHUB_OUTPUT"
+          ccache --show-stats || true
+          stats=$(ccache --print-stats 2>/dev/null || true)
+          get() { local v; v=$(echo "$stats" | awk -v k="$1" '$1 == k { print $2 }'); echo "${v:-0}"; }
+          hits=$(( $(get direct_cache_hit) + $(get preprocessed_cache_hit) ))
+          misses=$(get cache_miss)
+          total=$(( hits + misses ))
+          if [ "$total" -gt 0 ]; then rate=$(( hits * 100 / total )); else rate=0; fi
+          restored="${{ steps.ccache.outputs.cache-matched-key }}"
+          # Guardar si no había nada que restaurar, o si más del 3 % de las compilaciones falló. Si no, la entrada
+          # restaurada ya sirve, y volver a guardar 3 GB solo cuesta minutos.
+          save=false
+          if [ -z "$restored" ] || [ "$total" -eq 0 ] || [ $(( misses * 100 )) -gt $(( total * 3 )) ]; then
+            save=true
+          fi
+          echo "save=$save" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Build del APK"
+            echo "- Tiempo de gradle: ${BUILD_SECONDS:-?} s"
+            echo "- Clave de traducción: spm-translated-${SPM_REGION}"
+            echo "- Caché de ccache restaurada: ${restored:-ninguna}"
+            echo "- Aciertos de ccache: ${hits} de ${total} (${rate} %)"
+            echo "- ¿Se guarda ccache en este run?: $save"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Guardar ccache
-        if: always()
+        if: always() && steps.ccstats.outputs.has == 'true' && (failure() || steps.ccstats.outputs.save == 'true')
         uses: actions/cache/save@v4
         with:
           path: ${{ env.CCACHE_DIR }}
@@ -209,6 +300,7 @@ jobs:
           echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: super-paper-mario-${{ inputs.region }}-apk
           path: android/app/build/outputs/apk/release/*.apk

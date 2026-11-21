@@ -9,6 +9,9 @@ val spmGameRevision = System.getenv("SPM_GAME_REVISION") ?: "0"
 val spmDolSha = System.getenv("SPM_DOL_SHA") ?: "0d7487bc387ee1e905be335acc1e25300eb28bb8949667f753f038dbd9cf53b3"
 // The runtime to build: USA (wiicompiled/runtime) or the PAL copy made for Europe (wiicompiled/pal/runtime).
 val spmRuntimeCmake = System.getenv("SPM_RUNTIME_CMAKE") ?: "../../wiicompiled/runtime/CMakeLists.txt"
+// Release signing. CI restores the keystore from the secret SPM_KEYSTORE_BASE64 to SPM_KEYSTORE_PATH, so every build
+// has the same key and can update the one before it. Without it the APK is signed with the debug key.
+val releaseKeystore = System.getenv("SPM_KEYSTORE_PATH")?.takeIf { it.isNotEmpty() }
 
 android {
     namespace = "com.superpapermario"
@@ -80,8 +83,23 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            // Personal builds: signed with the debug key so the APK installs directly.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (releaseKeystore != null) {
+                signingConfigs.getByName("spm")
+            } else {
+                logger.warn("SPM_KEYSTORE_PATH no está definido: se firma con la clave debug, que no puede actualizar una instalación firmada con otra clave.")
+                signingConfigs.getByName("debug")
+            }
+        }
+    }
+
+    signingConfigs {
+        if (releaseKeystore != null) {
+            create("spm") {
+                storeFile = file(releaseKeystore)
+                storePassword = System.getenv("SPM_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("SPM_KEY_ALIAS")
+                keyPassword = System.getenv("SPM_KEY_PASSWORD")
+            }
         }
     }
 
