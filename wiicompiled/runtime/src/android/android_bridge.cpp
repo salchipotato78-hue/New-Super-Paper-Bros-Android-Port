@@ -28,6 +28,7 @@
 
 #include <android/api-level.h>
 #include <android/performance_hint.h>
+#include <dlfcn.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -79,25 +80,54 @@ namespace {
 APerformanceHintSession* g_guestHintSession = nullptr;
 bool g_guestHintTried = false;
 constexpr int64_t kGuestFrameBudgetNanos = 16666666;  // one frame at 60 Hz, the guest clock
+
+// The hint API is Android 13+ (API 33) and the app's minSdk is 30. The NDK marks these functions unavailable below
+// 33, so calling them directly does not compile. They are looked up at run time instead: on older devices the
+// lookup returns null and the hint is simply off.
+using GetManagerFn = APerformanceHintManager* (*)();
+using CreateSessionFn = APerformanceHintSession* (*)(APerformanceHintManager*, const int32_t*, size_t, int64_t);
+using ReportWorkFn = int (*)(APerformanceHintSession*, int64_t);
+
+struct HintApi {
+    GetManagerFn getManager = nullptr;
+    CreateSessionFn createSession = nullptr;
+    ReportWorkFn reportWork = nullptr;
+};
+
+const HintApi& LoadHintApi()
+{
+    static const HintApi api = [] {
+        HintApi a;
+        a.getManager = reinterpret_cast<GetManagerFn>(dlsym(RTLD_DEFAULT, "APerformanceHint_getManager"));
+        a.createSession = reinterpret_cast<CreateSessionFn>(dlsym(RTLD_DEFAULT, "APerformanceHint_createSession"));
+        a.reportWork = reinterpret_cast<ReportWorkFn>(dlsym(RTLD_DEFAULT, "APerformanceHint_reportActualWorkDuration"));
+        if (a.getManager == nullptr || a.createSession == nullptr || a.reportWork == nullptr) {
+            a = HintApi{};
+        }
+        return a;
+    }();
+    return api;
+}
 }  // namespace
 
 extern "C" void SpmAndroidReportFrameWork(int64_t workNanos)
 {
-    // __builtin_available: the hint API is Android 13+, the app's minSdk is 30, so the calls are guarded at run time.
-    if (__builtin_available(android 33, *)) {
-        // The session is bound to the thread that first reports, which is the game thread.
-        if (!g_guestHintTried) {
-            g_guestHintTried = true;
-            if (APerformanceHintManager* manager = APerformanceHint_getManager()) {
-                const int32_t tid = static_cast<int32_t>(syscall(SYS_gettid));
-                g_guestHintSession = APerformanceHint_createSession(manager, &tid, 1, kGuestFrameBudgetNanos);
-            }
-            RT_LOGF(RT_TAG_VI, "ADPF guest hint: api %d, session %s (tid %d)\n", android_get_device_api_level(),
-                    g_guestHintSession ? "created" : "not created", static_cast<int>(syscall(SYS_gettid)));
+    const HintApi& api = LoadHintApi();
+    if (api.getManager == nullptr) {
+        return;  // Android below 13: no performance hint
+    }
+    // The session is bound to the thread that first reports, which is the game thread.
+    if (!g_guestHintTried) {
+        g_guestHintTried = true;
+        if (APerformanceHintManager* manager = api.getManager()) {
+            const int32_t tid = static_cast<int32_t>(syscall(SYS_gettid));
+            g_guestHintSession = api.createSession(manager, &tid, 1, kGuestFrameBudgetNanos);
         }
-        if (g_guestHintSession != nullptr && workNanos > 0) {
-            APerformanceHint_reportActualWorkDuration(g_guestHintSession, workNanos);
-        }
+        RT_LOGF(RT_TAG_VI, "ADPF guest hint: api %d, session %s (tid %d)\n", android_get_device_api_level(),
+                g_guestHintSession ? "created" : "not created", static_cast<int>(syscall(SYS_gettid)));
+    }
+    if (g_guestHintSession != nullptr && workNanos > 0) {
+        api.reportWork(g_guestHintSession, workNanos);
     }
 }
 
