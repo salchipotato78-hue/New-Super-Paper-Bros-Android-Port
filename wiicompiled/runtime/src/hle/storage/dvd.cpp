@@ -169,10 +169,18 @@ void StartReadCachePreload() {
         const auto start = std::chrono::steady_clock::now();
         uint64_t total = 0;
         size_t files = 0;
+        uint64_t skippedBytes = 0;
+        size_t skippedFiles = 0;
         for (const fs::path& path : paths) {
             std::error_code ec;
             const uint64_t size = fs::file_size(path, ec);
-            if (ec || size == 0 || total + size > kCacheLimitBytes || CachedFile(path)) {
+            if (ec || size == 0 || CachedFile(path)) {
+                continue;
+            }
+            if (total + size > kCacheLimitBytes) {
+                // Not cached: every read of this file runs on the game thread from storage.
+                skippedBytes += size;
+                ++skippedFiles;
                 continue;
             }
             std::ifstream file(path, std::ios::binary);
@@ -195,6 +203,11 @@ void StartReadCachePreload() {
                                   std::chrono::steady_clock::now() - start)
                                   .count()
                            << " ms" << std::endl;
+        if (skippedFiles > 0) {
+            RT_LOG(RT_TAG_DVD) << "read cache: " << skippedFiles << " file(s), " << (skippedBytes >> 20)
+                               << " MiB NOT cached (over the " << (kCacheLimitBytes >> 20)
+                               << " MiB limit); reads of these run on the game thread" << std::endl;
+        }
     }).detach();
 #endif
 }

@@ -1,3 +1,21 @@
+# Android: 60 fps estables, después interpolación a 120
+
+- **Hito 1, 60 fps estables.** La app pide al sistema `preferredRefreshRate = 60` (Window), así el juego corre con
+  una refresca por frame del juego y el reloj de pantalla se queda activo también en móviles de 90 o 120 Hz (antes,
+  en 90 Hz no hay un múltiplo entero de 60 y el lock se apagaba). El reloj de pantalla usa la frecuencia real que
+  reporta `Display.getRefreshRate()`, y la registra una vez en logcat (`display refresh X Hz, target 60 Hz`).
+- **Hito 2, interpolación a 120.** Con la opción de 120 fps pide `preferredRefreshRate = 120`: el reloj del juego sigue
+  a 60 (dos refrescas por frame) y los frames interpolados ocupan los huecos. En una pantalla que no llega a 120 Hz la
+  petición se ignora y el juego queda a 60; el log lo muestra.
+- **Cómo comprobarlo en el teléfono (logcat):**
+  - `SPM: display refresh 60.0 Hz, target 60 Hz`: la petición funcionó.
+  - `[vi] V-Sync: display 60.000 Hz (Choreographer), game clock locked at 1 refresh(es) per frame`: el lock está activo.
+  - Si aparece `no whole fraction near 60 Hz`, la pantalla no quiso 60 Hz: el juego sigue con su reloj propio.
+  - Con interpolación: `interp: displayed N fps` debe acercarse a 120 con la pantalla a 120 Hz.
+- **Sin probar en dispositivo.** Esta parte depende de que el sistema acepte la petición de refresca.
+
+---
+
 # Android: reloj de pantalla, performance hint y resto de lo que tiene Wario
 
 - **Reloj del juego enlazado a la pantalla (causa principal del "entrecortado" en Android).** En Android el lock de

@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Build;
 import android.view.Choreographer;
+import android.view.WindowManager;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
@@ -101,6 +102,7 @@ public class GameActivity extends SDLActivity {
         interp120 = (graphics & 1) != 0;
         vsync = (graphics & 2) != 0;
         disableCopyFilter = (graphics & 4) != 0;
+        applyRefreshRate();
 
         overlay = new TouchOverlay(this);
         addContentView(overlay, new FrameLayout.LayoutParams(
@@ -141,6 +143,19 @@ public class GameActivity extends SDLActivity {
         vsync = sync;
         disableCopyFilter = noCopyFilter;
         nativeApplyGraphicsSettings(interp120, vsync, disableCopyFilter);
+        applyRefreshRate();
+    }
+
+    /**
+     * Asks the system for the refresh rate the game clock divides evenly: 60 Hz for stable 60 fps (one refresh per
+     * game frame), 120 Hz when the 120 fps interpolation is on (two refreshes per game frame, the interpolated frames
+     * in between). On a 90 Hz screen 60 fps cannot be shown evenly, so the request is what keeps the pacing steady.
+     * The system may refuse the request; the display clock then reports the rate it actually got.
+     */
+    private void applyRefreshRate() {
+        WindowManager.LayoutParams params = getWindow().getAttributes();
+        params.preferredRefreshRate = interp120 ? 120f : 60f;
+        getWindow().setAttributes(params);
     }
 
     // Game language (PAL disc only; the USA disc has English only). Codes in the order of the SC codes 1..5.
@@ -215,6 +230,7 @@ public class GameActivity extends SDLActivity {
     // True while a frame callback is queued. Keeps a quick pause and resume from queuing a second chain, which would
     // call nativeSetDisplayClock twice per frame.
     private boolean displayClockPending;
+    private boolean displayClockLogged;
 
     private void startDisplayClock() {
         displayClockOn = true;
@@ -226,7 +242,12 @@ public class GameActivity extends SDLActivity {
                     if (!displayClockOn) {
                         return;
                     }
-                    double hz = getWindowManager().getDefaultDisplay().getRefreshRate();
+                    double hz = getDisplay() != null ? getDisplay().getRefreshRate() : 60.0;
+                    if (!displayClockLogged) {
+                        displayClockLogged = true;
+                        android.util.Log.i("SPM", "display refresh " + hz + " Hz, target "
+                                + (interp120 ? "120 Hz (interpolation)" : "60 Hz"));
+                    }
                     nativeSetDisplayClock(frameTimeNanos, hz);
                     displayClockPending = true;
                     Choreographer.getInstance().postFrameCallback(this);

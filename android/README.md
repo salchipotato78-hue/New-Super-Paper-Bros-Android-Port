@@ -99,6 +99,9 @@ Los botones y su entrada del mando Wii (sideways). Está en `TouchOverlay.contri
 - **Reloj de pantalla (vsync).** `GameActivity` manda el vblank de cada frame (`Choreographer`) y el runtime sincroniza
   el reloj del juego a la pantalla. Sin esto, el juego va a 60 Hz libres y los frames se ven entrecortados. Se desactiva
   con la opción de vsync del menú.
+- **Refresca de la pantalla.** La app pide 60 Hz (o 120 Hz con la interpolación de 120 fps) al sistema. Con 60 fps
+  estables, cada frame del juego ocupa una refresca; con 120 fps, dos, y la interpolación rellena los huecos. Si la
+  pantalla no admite la petición, el log lo dice (ver CAMBIOS.md).
 - **Performance hint (ADPF, Android 13+).** Pide al sistema que mantenga el hilo de juego en un núcleo rápido. Solo
   cambia la planificación, no el resultado del juego.
 - **Resolución dinámica y control térmico.** En Android el runtime baja la resolución de render solo mientras la GPU
