@@ -37,9 +37,9 @@ jobs:
   build-apk:
     runs-on: ubuntu-24.04
     timeout-minutes: 300
-    # Needed to create the release with the APK (the default token is read-only on forks).
+    # Read-only: the APK is published as a workflow artifact, not as a release.
     permissions:
-      contents: write
+      contents: read
     env:
       SDL_VERSION: "3.4.4"                   # = AURORA_SDL3_VERSION en wiicompiled/aurora-main/CMakeLists.txt
       NDK_VERSION: "29.0.14206865"           # el NDK con el que se probó el runtime (tools/android/README)
@@ -319,22 +319,6 @@ jobs:
         with:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-spm-${{ github.run_id }}
-
-      - name: Publicar el APK como release de GitHub
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -e
-          APK=$(ls android/app/build/outputs/apk/release/*.apk | head -n 1)
-          MODE=""
-          if [ -n "$SPM_PGO" ] && [ "$SPM_PGO" != "none" ]; then MODE="-pgo-${SPM_PGO}"; fi
-          NAME="super-paper-mario-${SPM_REGION}${MODE}.apk"
-          cp "$APK" "$NAME"
-          TAG="apk-${SPM_REGION}${MODE}-run${GITHUB_RUN_NUMBER}"
-          gh release create "$TAG" "$NAME" -R "$GITHUB_REPOSITORY" \
-            --title "Super Paper Mario Android (${SPM_REGION}) - run ${GITHUB_RUN_NUMBER}" \
-            --notes "APK de Super Paper Mario para Android, región ${SPM_REGION}. Compilado desde el commit ${GITHUB_SHA:0:7}. Instálalo con el zip de datos de la misma región (ver android/README.md)."
-          echo "Release: https://github.com/${GITHUB_REPOSITORY}/releases/tag/${TAG}"
 
       - uses: actions/upload-artifact@v4
         if: always()

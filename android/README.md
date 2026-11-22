@@ -118,6 +118,20 @@ Los botones y su entrada del mando Wii (sideways). Está en `TouchOverlay.contri
   4. `use`: APK optimizado con ese perfil. Un perfil de otro commit sigue valiendo para las funciones que no cambiaron;
      el resto se compila sin perfil (sin error).
 
+## Descargar el APK
+
+El workflow no publica releases: cada ejecución deja el APK como **artefacto** del run (pestaña *Actions*, abajo del
+todo: `super-paper-mario-<región>-<pgo>-apk`).
+
+## Diagnóstico sin launcher
+
+Todo se activa con archivos en la carpeta de datos de la app (`Android/data/com.superpapermario/files/`), sin
+necesidad de menús:
+
+- `Config.toml`, sección `[video]`: `show_fps = true` pone el contador de FPS en pantalla (reinicia la app).
+- `log_fps.txt` (vacío): escribe en `console.log` las líneas de FPS y de interpolación (`[vi] ... interp: displayed N fps`).
+- `profile.txt` (`inicio:duración`): perfil de CPU, ver la sección siguiente.
+
 ## Medir dónde va el tiempo (perfil de CPU)
 
 Crea `profile.txt` en la carpeta de datos de la app (`Android/data/com.superpapermario/files/`) con una línea

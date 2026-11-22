@@ -1,4 +1,7 @@
-# Android: perfil de CPU del hilo de juego y diagnóstico del log
+# Android: perfil de CPU, diagnóstico sin launcher, workflow sin release
+
+- **El workflow ya no publica release**: el APK queda como artefacto del run.
+- **`log_fps.txt`** activa el log de FPS e interpolación (equivalente a `NSMBW_LOG_FPS`).
 
 - **Profiler de muestreo en Android** (`runtime/src/guest_profiler_android.cpp`). Hasta ahora solo existía en Windows.
   Muestrea el tiempo de CPU del hilo del juego (SIGPROF, 1 kHz) y lo mapea a funciones traducidas con la misma tabla
@@ -8,7 +11,7 @@
   media ~31 ms por frame (33 fps) y es la única causa de los frames lentos: `gx`, `copies`, `disc` y `present` son
   despreciables. La caché de shaders estaba fría en la primera sesión (61 s de prewarm) y caliente en la segunda (4.7 s).
   Los "hitch" de presentación son raros (1-6 por sesión). La etiqueta `scene` no cambia nunca: no sirve para separar
-  zonas. Con `show_fps=false` no hay líneas de interpolación, así que no se puede comprobar si la interpolación actuó.
+  zonas. Las líneas de FPS e interpolación dependían de la variable de entorno `NSMBW_LOG_FPS`, que en Android no se puede definir: ahora también se activan con un `log_fps.txt` en la carpeta de datos.
 
 ---
 

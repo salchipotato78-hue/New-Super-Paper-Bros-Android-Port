@@ -1,5 +1,6 @@
 #include "frontend/runtime_mode.h"
 #include <vector>
+#include <filesystem>
 #include "frame_input.h"
 #include "det_hash.h"
 #include "timebase_contract.h"
@@ -1025,7 +1026,9 @@ struct FrameTimes {
 };
 
 static bool LogFpsEnabled() {
-    static const bool on = std::getenv("NSMBW_LOG_FPS") != nullptr;
+    // NSMBW_LOG_FPS (desktop), or an empty log_fps.txt in the app data folder (Android has no environment to set).
+    static const bool on = std::getenv("NSMBW_LOG_FPS") != nullptr ||
+                           std::filesystem::exists(RuntimeConfigFile::ApplicationDataDirectory() / "log_fps.txt");
     return on;
 }
 
