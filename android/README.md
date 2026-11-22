@@ -118,6 +118,13 @@ Los botones y su entrada del mando Wii (sideways). Está en `TouchOverlay.contri
   4. `use`: APK optimizado con ese perfil. Un perfil de otro commit sigue valiendo para las funciones que no cambiaron;
      el resto se compila sin perfil (sin error).
 
+## Medir dónde va el tiempo (perfil de CPU)
+
+Crea `profile.txt` en la carpeta de datos de la app (`Android/data/com.superpapermario/files/`) con una línea
+`inicio:duración`, por ejemplo `20:30` (empieza a los 20 s del primer frame y dura 30 s). Juega esa zona durante la
+ventana y busca en `console.log` las líneas `profile:`. El porcentaje es el tiempo de CPU del hilo de juego en esa
+función; el informe también muestra la parte que está en el runtime (`exe+... (runtime code)`) y en el sistema.
+
 ## Estructura
 
 | Ruta | Contenido |

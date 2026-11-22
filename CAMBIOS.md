@@ -1,3 +1,17 @@
+# Android: perfil de CPU del hilo de juego y diagnóstico del log
+
+- **Profiler de muestreo en Android** (`runtime/src/guest_profiler_android.cpp`). Hasta ahora solo existía en Windows.
+  Muestrea el tiempo de CPU del hilo del juego (SIGPROF, 1 kHz) y lo mapea a funciones traducidas con la misma tabla
+  que el de Windows. Se activa con `profile.txt` en la carpeta de datos de la app (`inicio:duración`, en segundos desde
+  el primer frame presentado). El informe sale en `console.log` como `profile: X%  dirección nombre`.
+- **Diagnóstico de los logs del 22/11 (dos sesiones, la escena `0xA418` en todo momento):** la CPU del juego tarda de
+  media ~31 ms por frame (33 fps) y es la única causa de los frames lentos: `gx`, `copies`, `disc` y `present` son
+  despreciables. La caché de shaders estaba fría en la primera sesión (61 s de prewarm) y caliente en la segunda (4.7 s).
+  Los "hitch" de presentación son raros (1-6 por sesión). La etiqueta `scene` no cambia nunca: no sirve para separar
+  zonas. Con `show_fps=false` no hay líneas de interpolación, así que no se puede comprobar si la interpolación actuó.
+
+---
+
 # Android: 60 fps estables, después interpolación a 120
 
 - **Hito 1, 60 fps estables.** La app pide al sistema `preferredRefreshRate = 60` (Window), así el juego corre con

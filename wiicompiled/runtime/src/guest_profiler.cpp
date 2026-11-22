@@ -218,6 +218,10 @@ void Run(HANDLE thread, double startSeconds, double lengthSeconds) {
 } // namespace
 
 void OnFramePresented() {
+#if defined(__ANDROID__)
+    AndroidOnFramePresented();
+    return;
+#endif
 #ifdef _WIN32
     static bool started = false;
     if (started) {
